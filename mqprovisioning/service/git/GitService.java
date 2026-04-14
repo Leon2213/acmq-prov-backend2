@@ -80,7 +80,7 @@ public class GitService {
                 Git git = Git.open(repoPath.toFile());
                 repoCache.put(repoName, git);
             }
-        } catch (IOException | GitAPIException e) {
+        } catch (IOException e) {
             log.error("Error preparing repository {}", repoName, e);
             throw new RuntimeException("Kunde inte förbereda repository: " + repoName, e);
         }
@@ -109,7 +109,7 @@ public class GitService {
                 Git git = Git.open(repoPath.toFile());
                 repoCache.put(repoName, git);
             }
-        } catch (IOException | GitAPIException e) {
+        } catch (IOException e) {
             log.error("Error preparing repository {}", repoName, e);
             throw new RuntimeException("Kunde inte förbereda repository: " + repoName, e);
         }

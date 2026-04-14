@@ -61,7 +61,7 @@ public class BitbucketPRService {
         log.info("Creating pull request in Bitbucket Server for {}/{} from {} to {}",
                 projectKey, repoSlug, sourceBranch, targetBranch);
 
-        List<Map<String, Object>> reviewers = getGroupMembers(reviewerGroup);
+        List<Map<String, Object>> reviewers = getGroupMembers();
 
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("title", title);
@@ -121,37 +121,52 @@ public class BitbucketPRService {
     }
 
     /**
-     * Söker efter aktiva Bitbucket-användare vars namn matchar det givna filtret
-     * och returnerar dem i det format som Bitbucket Server förväntar sig för reviewers.
-     * Använder /users?filter= vilket matchar hur UI:n söker upp användare.
+     * Hämtar projektets reviewer-grupper från Bitbucket, plockar ut gruppen
+     * med namn matchande reviewerGroup (default "ICC") och returnerar dess
+     * medlemmar i det format som Bitbucket Server förväntar sig för reviewers.
      * Vid fel loggas en varning och en tom lista returneras så att PR-skapandet
      * inte blockeras.
      */
-    private List<Map<String, Object>> getGroupMembers(String userFilter) {
+    private List<Map<String, Object>> getGroupMembers() {
         try {
-            GroupMembersResponse response = webClient.get()
-                    .uri(bitbucketApiUrl + "/users?filter={filter}&limit=100", userFilter)
+            ReviewerGroupsResponse response = webClient.get()
+                    .uri(bitbucketApiUrl + "/projects/{projectKey}/settings/reviewer-groups", projectKey)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + bitbucketToken)
                     .retrieve()
-                    .bodyToMono(GroupMembersResponse.class)
+                    .bodyToMono(ReviewerGroupsResponse.class)
                     .block();
 
             if (response == null || response.getValues() == null) {
-                log.warn("No users found matching filter '{}'", userFilter);
+                log.warn("No reviewer groups found for project '{}'", projectKey);
                 return List.of();
             }
 
-            List<Map<String, Object>> reviewers = response.getValues().stream()
+            ReviewerGroup group = response.getValues().stream()
+                    .filter(g -> reviewerGroup.equals(g.getName()))
+                    .findFirst()
+                    .orElse(null);
+
+            if (group == null) {
+                log.warn("Reviewer group '{}' not found in project '{}'", reviewerGroup, projectKey);
+                return List.of();
+            }
+
+            if (group.getUsers() == null || group.getUsers().isEmpty()) {
+                log.warn("Reviewer group '{}' has no members", reviewerGroup);
+                return List.of();
+            }
+
+            List<Map<String, Object>> reviewers = group.getUsers().stream()
                     .filter(GroupMember::isActive)
                     .map(user -> Map.<String, Object>of("user", Map.of("name", user.getName())))
                     .collect(Collectors.toList());
 
-            log.info("Found {} active member(s) matching filter '{}'", reviewers.size(), userFilter);
+            log.info("Found {} active member(s) in reviewer group '{}'", reviewers.size(), reviewerGroup);
             return reviewers;
 
         } catch (Exception e) {
-            log.warn("Could not fetch users matching filter '{}', proceeding without reviewers: {}",
-                    userFilter, e.getMessage());
+            log.warn("Could not fetch reviewer group '{}', proceeding without reviewers: {}",
+                    reviewerGroup, e.getMessage());
             return List.of();
         }
     }
@@ -197,9 +212,17 @@ public class BitbucketPRService {
     // Response DTOs för Bitbucket Server
 
     @lombok.Data
-    public static class GroupMembersResponse {
-        private List<GroupMember> values;
+    public static class ReviewerGroupsResponse {
+        private List<ReviewerGroup> values;
         private boolean isLastPage;
+    }
+
+    @lombok.Data
+    public static class ReviewerGroup {
+        private Long id;
+        private String name;
+        private String description;
+        private List<GroupMember> users;
     }
 
     @lombok.Data

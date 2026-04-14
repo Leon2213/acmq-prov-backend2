@@ -23,29 +23,28 @@ import java.util.stream.Collectors;
 @Service
 public class BitbucketPRService {
 
-    @Value("${git.bitbucket.api.url}")
-    private String bitbucketApiUrl;
-
-    @Value("${git.bitbucket.token}")
-    private String bitbucketToken;
-
-    @Value("${git.bitbucket.project.key}")
-    private String projectKey;
-
-    @Value("${git.bitbucket.hieradata.repo}")
-    private String hieradataRepo;
-
-    @Value("${git.bitbucket.puppet.repo}")
-    private String puppetRepo;
-
-    @Value("${git.bitbucket.reviewer.group:ICC}")
-    private String reviewerGroup;
-
+    private final String bitbucketApiUrl;
+    private final String projectKey;
+    private final String hieradataRepo;
+    private final String puppetRepo;
+    private final String reviewerGroup;
     private final WebClient webClient;
 
-    public BitbucketPRService() {
+    public BitbucketPRService(
+            @Value("${git.bitbucket.api.url}") String bitbucketApiUrl,
+            @Value("${git.bitbucket.token}") String bitbucketToken,
+            @Value("${git.bitbucket.project.key}") String projectKey,
+            @Value("${git.bitbucket.hieradata.repo}") String hieradataRepo,
+            @Value("${git.bitbucket.puppet.repo}") String puppetRepo,
+            @Value("${git.bitbucket.reviewer.group:ICC}") String reviewerGroup) {
+        this.bitbucketApiUrl = bitbucketApiUrl;
+        this.projectKey = projectKey;
+        this.hieradataRepo = hieradataRepo;
+        this.puppetRepo = puppetRepo;
+        this.reviewerGroup = reviewerGroup;
         this.webClient = WebClient.builder()
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + bitbucketToken)
                 .build();
     }
 
@@ -94,7 +93,6 @@ public class BitbucketPRService {
         try {
             PullRequestResponse response = webClient.post()
                     .uri(endpoint, projectKey, repoSlug)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + bitbucketToken)
                     .bodyValue(requestBody)
                     .retrieve()
                     .bodyToMono(PullRequestResponse.class)
@@ -131,7 +129,6 @@ public class BitbucketPRService {
         try {
             ReviewerGroupsResponse response = webClient.get()
                     .uri(bitbucketApiUrl + "/projects/{projectKey}/settings/reviewer-groups", projectKey)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + bitbucketToken)
                     .retrieve()
                     .bodyToMono(ReviewerGroupsResponse.class)
                     .block();
@@ -181,7 +178,6 @@ public class BitbucketPRService {
         try {
             PullRequestResponse response = webClient.get()
                     .uri(endpoint, projectKey, repoSlug, prId)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + bitbucketToken)
                     .retrieve()
                     .bodyToMono(PullRequestResponse.class)
                     .block();

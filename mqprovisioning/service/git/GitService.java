@@ -17,7 +17,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -40,6 +44,12 @@ public class GitService {
     private String gitToken;
 
     private final Map<String, Git> repoCache = new HashMap<>();
+
+    // Only the directories actually used by this application are checked out.
+    // Hieradata: role/acmq.yaml and pm_env/pro/acmq.yaml
+    private static final List<String> HIERADATA_SPARSE_PATHS = Arrays.asList("role", "pm_env");
+    // Puppet: modules/icc_artemis_broker/manifests/init.pp + templates/brokers/etc/broker.xml.erb
+    private static final List<String> PUPPET_SPARSE_PATHS = Collections.singletonList("modules/icc_artemis_broker");
 
 
     public void prepareRepoHieradata() {
@@ -78,14 +88,10 @@ public class GitService {
 
                 repoCache.put(repoName, git);
             } else {
-                log.info("Cloning repository {} from {}", repoName, hieradataRepoUrl);
-                Files.createDirectories(repoPath);
-                Git git = Git.cloneRepository()
-                        .setURI(hieradataRepoUrl)
-                        .setDepth(1)
-                        .setDirectory(repoPath.toFile())
-                        .setCredentialsProvider(getCredentialsProvider())
-                        .call();
+                log.info("Sparse-cloning repository {} from {}", repoName, hieradataRepoUrl);
+                Files.createDirectories(repoPath.getParent());
+                sparseClone(hieradataRepoUrl, repoPath, "master", HIERADATA_SPARSE_PATHS);
+                Git git = Git.open(repoPath.toFile());
                 repoCache.put(repoName, git);
             }
         } catch (IOException | GitAPIException e) {
@@ -135,14 +141,10 @@ public class GitService {
 
                     repoCache.put(repoName, git);
             } else {
-                log.info("Cloning repository {} from {}", repoName, puppetRepoUrl);
-                Files.createDirectories(repoPath);
-                Git git = Git.cloneRepository()
-                        .setURI(puppetRepoUrl)
-                        .setDepth(1)
-                        .setDirectory(repoPath.toFile())
-                        .setCredentialsProvider(getCredentialsProvider())
-                        .call();
+                log.info("Sparse-cloning repository {} from {}", repoName, puppetRepoUrl);
+                Files.createDirectories(repoPath.getParent());
+                sparseClone(puppetRepoUrl, repoPath, "prod", PUPPET_SPARSE_PATHS);
+                Git git = Git.open(repoPath.toFile());
                 repoCache.put(repoName, git);
             }
         } catch (IOException | GitAPIException e) {
@@ -402,6 +404,65 @@ public class GitService {
         // Om vi inte hittar rätt plats, lägg till i slutet
         log.warn("Could not find proper insertion point in XML/ERB, appending");
         return existing + "\n" + newContent;
+    }
+
+    /**
+     * Clones a repository using sparse checkout so that only {@code sparsePaths} directories
+     * are written to disk, and using {@code --filter=blob:none} so that blobs that fall
+     * outside the sparse cone are never downloaded from the server.
+     *
+     * <p>Requires Git 2.25+ on the host and partial-clone support on the remote server
+     * (Bitbucket Cloud and Bitbucket Data Center 7.x+ both support this).
+     */
+    private void sparseClone(String repoUrl, Path repoPath, String branch, List<String> sparsePaths)
+            throws IOException {
+        try {
+            log.info("Sparse-cloning {} (branch: {}) – paths: {}", repoUrl, branch, sparsePaths);
+
+            // Download commit + tree objects only; no blobs yet.
+            runGitCommand(repoPath.getParent(), Arrays.asList(
+                    "git", "clone",
+                    "--filter=blob:none",
+                    "--no-checkout",
+                    "--depth=1",
+                    "--branch", branch,
+                    repoUrl,
+                    repoPath.getFileName().toString()
+            ));
+
+            // Enable cone-mode sparse checkout (faster pattern matching).
+            runGitCommand(repoPath, Arrays.asList("git", "sparse-checkout", "init", "--cone"));
+
+            // Restrict working tree to the specified directories.
+            List<String> setCmd = new ArrayList<>(Arrays.asList("git", "sparse-checkout", "set"));
+            setCmd.addAll(sparsePaths);
+            runGitCommand(repoPath, setCmd);
+
+            // Checkout – only blobs for the sparse paths are fetched from the server.
+            runGitCommand(repoPath, Arrays.asList("git", "checkout", branch));
+
+            log.info("Sparse clone complete. Checked-out paths: {}", sparsePaths);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Sparse clone interrupted for " + repoUrl, e);
+        }
+    }
+
+    private void runGitCommand(Path directory, List<String> command) throws IOException, InterruptedException {
+        log.debug("git> {}", String.join(" ", command));
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(directory.toFile());
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        String output = new String(process.getInputStream().readAllBytes());
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new RuntimeException("Git command failed (exit " + exitCode + "): "
+                    + String.join(" ", command) + "\nOutput: " + output);
+        }
+        if (!output.isBlank()) {
+            log.debug("git output: {}", output);
+        }
     }
 
     /**

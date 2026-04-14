@@ -121,22 +121,23 @@ public class BitbucketPRService {
     }
 
     /**
-     * Hämtar alla aktiva medlemmar i en Bitbucket-grupp och returnerar dem
-     * i det format som Bitbucket Server förväntar sig för reviewers.
+     * Söker efter aktiva Bitbucket-användare vars namn matchar det givna filtret
+     * och returnerar dem i det format som Bitbucket Server förväntar sig för reviewers.
+     * Använder /users?filter= vilket matchar hur UI:n söker upp användare.
      * Vid fel loggas en varning och en tom lista returneras så att PR-skapandet
      * inte blockeras.
      */
-    private List<Map<String, Object>> getGroupMembers(String groupName) {
+    private List<Map<String, Object>> getGroupMembers(String userFilter) {
         try {
             GroupMembersResponse response = webClient.get()
-                    .uri(bitbucketApiUrl + "/admin/groups/more-members?context={group}&limit=100", groupName)
+                    .uri(bitbucketApiUrl + "/users?filter={filter}&limit=100", userFilter)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + bitbucketToken)
                     .retrieve()
                     .bodyToMono(GroupMembersResponse.class)
                     .block();
 
             if (response == null || response.getValues() == null) {
-                log.warn("No members found in group '{}'", groupName);
+                log.warn("No users found matching filter '{}'", userFilter);
                 return List.of();
             }
 
@@ -145,12 +146,12 @@ public class BitbucketPRService {
                     .map(user -> Map.<String, Object>of("user", Map.of("name", user.getName())))
                     .collect(Collectors.toList());
 
-            log.info("Found {} active member(s) in group '{}'", reviewers.size(), groupName);
+            log.info("Found {} active member(s) matching filter '{}'", reviewers.size(), userFilter);
             return reviewers;
 
         } catch (Exception e) {
-            log.warn("Could not fetch members of group '{}', proceeding without reviewers: {}",
-                    groupName, e.getMessage());
+            log.warn("Could not fetch users matching filter '{}', proceeding without reviewers: {}",
+                    userFilter, e.getMessage());
             return List.of();
         }
     }

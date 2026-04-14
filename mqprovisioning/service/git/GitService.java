@@ -3,10 +3,7 @@ package com.company.mqprovisioning.service.git;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.lib.RepositoryState;
-import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -123,31 +120,12 @@ public class GitService {
                 throw new IllegalStateException("Repository " + repoName + " inte förberedd");
             }
 
-            // Reset repository if it's in a bad state (MERGING, REBASING, etc.)
-            resetIfBadState(git, repoName);
+            Path repoPath = git.getRepository().getWorkTree().toPath();
 
-            // Checkout main först
-            git.checkout()
-                    .setName("master")
-                    .call();
+            // Sync to latest master via git CLI – JGit reset fails on partial clones.
+            syncRepo(repoPath, hieradataRepoUrl, "master");
 
-            // Pull senaste ändringarna
-            git.fetch()
-                    .setCredentialsProvider(getCredentialsProvider())
-                    .call();
-            git.reset()
-                    .setMode(ResetCommand.ResetType.HARD)
-                    .setRef("origin/master")
-                    .call();
-
-            Path acmqPath = Paths.get(git.getRepository().getWorkTree().getAbsolutePath(), "role/acmq.yaml");
-            log.info("Checking file at: {}", acmqPath);
-            log.info("File exists: {}", Files.exists(acmqPath));
-            if (Files.exists(acmqPath)) {
-                log.info("File size: {} bytes", Files.size(acmqPath));
-            }
-
-            // Skapa och checkout ny branch
+            // Branch creation is a pure ref operation – no object fetching, safe for JGit.
             git.checkout()
                     .setCreateBranch(true)
                     .setName(branchName)
@@ -170,24 +148,11 @@ public class GitService {
                 throw new IllegalStateException("Repository " + repoName + " inte förberedd");
             }
 
-            // Reset repository if it's in a bad state (MERGING, REBASING, etc.)
-            resetIfBadState(git, repoName);
+            Path repoPath = git.getRepository().getWorkTree().toPath();
 
-            // Checkout main först
-            git.checkout()
-                    .setName("prod")
-                    .call();
+            // Sync to latest prod via git CLI – JGit reset fails on partial clones.
+            syncRepo(repoPath, puppetRepoUrl, "prod");
 
-            // Pull senaste ändringarna
-            git.fetch()
-                    .setCredentialsProvider(getCredentialsProvider())
-                    .call();
-            git.reset()
-                    .setMode(ResetCommand.ResetType.HARD)
-                    .setRef("origin/prod")
-                    .call();
-
-            // Skapa och checkout ny branch
             git.checkout()
                     .setCreateBranch(true)
                     .setName(branchName)
@@ -197,6 +162,8 @@ public class GitService {
         } catch (GitAPIException e) {
             log.error("Error creating branch {} in repository {}", branchName, repoName, e);
             throw new RuntimeException("Kunde inte skapa branch: " + branchName, e);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -456,22 +423,6 @@ public class GitService {
         }
         if (!output.isBlank()) {
             log.debug("git output: {}", output);
-        }
-    }
-
-    /**
-     * Reset repository if it's in a bad state (MERGING, REBASING, CHERRY_PICKING, etc.)
-     * This can happen if a previous operation was interrupted.
-     */
-    private void resetIfBadState(Git git, String repoName) throws GitAPIException {
-        RepositoryState state = git.getRepository().getRepositoryState();
-        if (!state.canCommit()) {
-            log.warn("Repository {} is in bad state: {}. Resetting to HEAD...", repoName, state);
-            git.reset()
-                    .setMode(ResetCommand.ResetType.HARD)
-                    .setRef("HEAD")
-                    .call();
-            log.info("Repository {} reset successfully", repoName);
         }
     }
 

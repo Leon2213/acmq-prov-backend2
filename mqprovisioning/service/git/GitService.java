@@ -67,27 +67,11 @@ public class GitService {
 
             if (Files.exists(repoPath)) {
                 log.info("Repository {} already exists, pulling latest changes", repoName);
-
+                // Use the git CLI so partial-clone / sparse-checkout is handled correctly.
+                // JGit does not support the promisor protocol and would fail with
+                // MissingObjectException when resetting to a partial-clone ref.
+                syncRepo(repoPath, hieradataRepoUrl, "master");
                 Git git = Git.open(repoPath.toFile());
-
-                StoredConfig config = git.getRepository().getConfig();
-                config.setString("remote", "origin", "url", hieradataRepoUrl);
-                config.save();
-                resetIfBadState(git, repoName);
-
-                // Checkout main branch before pulling to avoid issues with non-existent remote branches
-                git.checkout()
-                        .setName("master")
-                        .call();
-
-                git.fetch()
-                        .setCredentialsProvider(getCredentialsProvider())
-                        .call();
-                git.reset()
-                        .setMode(ResetCommand.ResetType.HARD)
-                        .setRef("origin/master")
-                        .call();
-
                 repoCache.put(repoName, git);
             } else {
                 log.info("Sparse-cloning repository {} from {}", repoName, hieradataRepoUrl);
@@ -115,32 +99,8 @@ public class GitService {
 
                 if (Files.exists(repoPath)) {
                     log.info("Repository {} already exists, syncing with remote", repoName);
-
+                    syncRepo(repoPath, puppetRepoUrl, "prod");
                     Git git = Git.open(repoPath.toFile());
-
-                    // Sätt korrekt remote URL
-                    StoredConfig config = git.getRepository().getConfig();
-                    config.setString("remote", "origin", "url", puppetRepoUrl);
-                    config.save();
-
-                    // Reset om bad state
-                    resetIfBadState(git, repoName);
-
-                    // Fetch och hard reset - ingen checkout behövs
-                    git.fetch()
-                            .setCredentialsProvider(getCredentialsProvider())
-                            .call();
-
-                    git.checkout()
-                            .setName("prod")
-                            .setForce(true)
-                            .call();
-
-                    git.reset()
-                            .setMode(ResetCommand.ResetType.HARD)
-                            .setRef("origin/prod")
-                            .call();
-
                     repoCache.put(repoName, git);
             } else {
                 log.info("Sparse-cloning repository {} from {}", repoName, puppetRepoUrl);
@@ -406,6 +366,35 @@ public class GitService {
         // Om vi inte hittar rätt plats, lägg till i slutet
         log.warn("Could not find proper insertion point in XML/ERB, appending");
         return existing + "\n" + newContent;
+    }
+
+    /**
+     * Syncs an existing local repo to the latest state of {@code branch} on the remote.
+     * Uses the git CLI instead of JGit because JGit does not understand the partial-clone
+     * promisor protocol – it would throw MissingObjectException when resetting to a ref
+     * whose blobs were filtered out by {@code --filter=blob:none}.
+     */
+    private void syncRepo(Path repoPath, String repoUrl, String branch) throws IOException {
+        try {
+            String authenticatedUrl = buildAuthenticatedUrl(repoUrl);
+
+            // Keep the stored remote URL up to date.
+            runGitCommand(repoPath, Arrays.asList("git", "remote", "set-url", "origin", authenticatedUrl));
+
+            // Abort any in-progress merge/rebase/cherry-pick before touching anything.
+            runGitCommand(repoPath, Arrays.asList("git", "reset", "--hard", "HEAD"));
+
+            // Fetch only the target branch; --filter is read from .git/config (partial clone).
+            runGitCommand(repoPath, Arrays.asList("git", "fetch", "--depth=1", "origin", branch));
+
+            runGitCommand(repoPath, Arrays.asList("git", "checkout", branch));
+            runGitCommand(repoPath, Arrays.asList("git", "reset", "--hard", "origin/" + branch));
+
+            log.info("Synced {} to origin/{}", repoPath.getFileName(), branch);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Sync interrupted for " + repoPath, e);
+        }
     }
 
     /**

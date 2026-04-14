@@ -1,5 +1,6 @@
 package com.company.mqprovisioning.service.git;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -7,8 +8,12 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Bitbucket API Integration för att skapa Pull Requests
@@ -26,6 +31,9 @@ public class BitbucketPRService {
     private String bitbucketToken;
 
     private String workspace = "puppet";
+
+    @Value("${git.bitbucket.reviewer.group:ICC}")
+    private String reviewerGroup;
 
     @Value("${git.bitbucket.hieradata.repo}")
     private String hieradataRepo;
@@ -53,17 +61,21 @@ public class BitbucketPRService {
         log.info("Creating pull request in Bitbucket for {}/{} from {} to {}",
                 workspace, repoSlug, sourceBranch, targetBranch);
 
-        Map<String, Object> requestBody = Map.of(
-                "title", title,
-                "description", description,
-                "source", Map.of(
-                        "branch", Map.of("name", sourceBranch)
-                ),
-                "destination", Map.of(
-                        "branch", Map.of("name", targetBranch)
-                ),
-                "close_source_branch", true
-        );
+        // Sök reviewers via workspace-användarsökning (samma som Bitbucket UI gör)
+        List<Map<String, String>> reviewers = getReviewersByUserSearch(reviewerGroup)
+                .stream()
+                .map(accountId -> Map.of("account_id", accountId))
+                .collect(Collectors.toList());
+
+        Map<String, Object> requestBody = new java.util.LinkedHashMap<>();
+        requestBody.put("title", title);
+        requestBody.put("description", description);
+        requestBody.put("source", Map.of("branch", Map.of("name", sourceBranch)));
+        requestBody.put("destination", Map.of("branch", Map.of("name", targetBranch)));
+        requestBody.put("close_source_branch", true);
+        if (!reviewers.isEmpty()) {
+            requestBody.put("reviewers", reviewers);
+        }
 
         try {
             PullRequestResponse response = webClient.post()
@@ -195,6 +207,45 @@ public class BitbucketPRService {
         }
     }
 
+    /**
+     * Söker workspace-medlemmar vars display name eller nickname innehåller {@code searchQuery}.
+     * Det är samma sökning som Bitbucket UI gör när du skriver i reviewer-fältet –
+     * alltså en textbaserad användarsökning, inte en gruppmeddlemsuppslagning.
+     *
+     * Returnerar en lista med account_id (UUID) för matchande aktiva användare.
+     */
+    private List<String> getReviewersByUserSearch(String searchQuery) {
+        log.info("Searching for reviewers matching '{}' in workspace '{}'", searchQuery, workspace);
+        try {
+            WorkspaceMembersResponse response = webClient.get()
+                    .uri(bitbucketApiUrl + "/workspaces/{workspace}/members?pagelen=100", workspace)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + bitbucketToken)
+                    .retrieve()
+                    .bodyToMono(WorkspaceMembersResponse.class)
+                    .block();
+
+            List<String> accountIds = new ArrayList<>();
+            if (response != null && response.getValues() != null) {
+                String queryLower = searchQuery.toLowerCase();
+                for (WorkspaceMembership membership : response.getValues()) {
+                    if (membership.getUser() == null) continue;
+                    CloudUser user = membership.getUser();
+                    String displayName = Optional.ofNullable(user.getDisplayName()).orElse("").toLowerCase();
+                    String nickname   = Optional.ofNullable(user.getNickname()).orElse("").toLowerCase();
+                    if (displayName.contains(queryLower) || nickname.contains(queryLower)) {
+                        accountIds.add(user.getAccountId());
+                    }
+                }
+            }
+
+            log.info("Found {} active member(s) in group '{}'", accountIds.size(), searchQuery);
+            return accountIds;
+        } catch (Exception e) {
+            log.warn("Failed to search reviewers for '{}': {}", searchQuery, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
     private String getRepoSlug(String repoName) {
         return switch (repoName.toLowerCase()) {
             case "hieradata" -> hieradataRepo;
@@ -264,5 +315,28 @@ public class BitbucketPRService {
         private String state;
         private boolean merged;
         private String url;
+    }
+
+    // DTOs för workspace members-sökning (Bitbucket Cloud 2.0 API)
+
+    @lombok.Data
+    public static class WorkspaceMembersResponse {
+        private List<WorkspaceMembership> values;
+    }
+
+    @lombok.Data
+    public static class WorkspaceMembership {
+        private CloudUser user;
+    }
+
+    @lombok.Data
+    public static class CloudUser {
+        @JsonProperty("account_id")
+        private String accountId;
+
+        @JsonProperty("display_name")
+        private String displayName;
+
+        private String nickname;
     }
 }

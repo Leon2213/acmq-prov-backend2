@@ -49,7 +49,7 @@ public class GitService {
 
     // Only the directories actually used by this application are checked out.
     // Hieradata: role/acmq.yaml and pm_env/pro/acmq.yaml
-    private static final List<String> HIERADATA_SPARSE_PATHS = Arrays.asList("role", "pm_env");
+    private static final List<String> HIERADATA_SPARSE_PATHS = Arrays.asList("role", "pm_env/pro");
     // Puppet: modules/icc_artemis_broker/manifests/init.pp + templates/brokers/etc/broker.xml.erb
     private static final List<String> PUPPET_SPARSE_PATHS = Collections.singletonList("modules/icc_artemis_broker");
 

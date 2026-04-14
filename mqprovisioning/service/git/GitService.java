@@ -14,6 +14,8 @@ import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -419,6 +421,9 @@ public class GitService {
         try {
             log.info("Sparse-cloning {} (branch: {}) – paths: {}", repoUrl, branch, sparsePaths);
 
+            // Embed credentials in the URL so the git CLI does not prompt interactively.
+            String authenticatedUrl = buildAuthenticatedUrl(repoUrl);
+
             // Download commit + tree objects only; no blobs yet.
             runGitCommand(repoPath.getParent(), Arrays.asList(
                     "git", "clone",
@@ -426,7 +431,7 @@ public class GitService {
                     "--no-checkout",
                     "--depth=1",
                     "--branch", branch,
-                    repoUrl,
+                    authenticatedUrl,
                     repoPath.getFileName().toString()
             ));
 
@@ -479,6 +484,17 @@ public class GitService {
                     .call();
             log.info("Repository {} reset successfully", repoName);
         }
+    }
+
+    /**
+     * Inserts username and token into an HTTPS URL so the git CLI can authenticate
+     * without an interactive terminal prompt, e.g.:
+     * {@code https://user:token@bitbucket.example.com/scm/pup/repo.git}
+     */
+    private String buildAuthenticatedUrl(String repoUrl) {
+        String encodedUser  = URLEncoder.encode(gitUsername, StandardCharsets.UTF_8);
+        String encodedToken = URLEncoder.encode(gitToken,    StandardCharsets.UTF_8);
+        return repoUrl.replace("https://", "https://" + encodedUser + ":" + encodedToken + "@");
     }
 
     private UsernamePasswordCredentialsProvider getCredentialsProvider() {

@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -62,17 +63,27 @@ public class GitService {
             );
 
             if (Files.exists(repoPath)) {
-                log.info("Repository {} already exists, pulling latest changes", repoName);
-                syncRepo(repoPath, hieradataRepoUrl, "master");
-                Git git = Git.open(repoPath.toFile());
-                repoCache.put(repoName, git);
+                log.info("Repository {} already exists, syncing with remote", repoName);
+                try {
+                    syncRepo(repoPath, hieradataRepoUrl, "master");
+                } catch (IOException e) {
+                    // The on-disk repo was likely created by the old git-CLI partial-clone
+                    // approach. JGit cannot resolve blobs that were never downloaded
+                    // (MissingObjectException). Delete it and do a fresh JGit clone.
+                    log.warn("Sync failed for {} – deleting stale repo and re-cloning: {}",
+                            repoName, e.getMessage());
+                    closeAndEvict(repoName);
+                    deleteDirectory(repoPath);
+                    Files.createDirectories(repoPath.getParent());
+                    sparseClone(hieradataRepoUrl, repoPath, "master", HIERADATA_SPARSE_PATHS);
+                }
             } else {
                 log.info("Sparse-cloning repository {} from {}", repoName, hieradataRepoUrl);
                 Files.createDirectories(repoPath.getParent());
                 sparseClone(hieradataRepoUrl, repoPath, "master", HIERADATA_SPARSE_PATHS);
-                Git git = Git.open(repoPath.toFile());
-                repoCache.put(repoName, git);
             }
+            Git git = Git.open(repoPath.toFile());
+            repoCache.put(repoName, git);
         } catch (IOException e) {
             log.error("Error preparing repository {}", repoName, e);
             throw new RuntimeException("Kunde inte förbereda repository: " + repoName, e);
@@ -92,16 +103,23 @@ public class GitService {
 
             if (Files.exists(repoPath)) {
                 log.info("Repository {} already exists, syncing with remote", repoName);
-                syncRepo(repoPath, puppetRepoUrl, "prod");
-                Git git = Git.open(repoPath.toFile());
-                repoCache.put(repoName, git);
+                try {
+                    syncRepo(repoPath, puppetRepoUrl, "prod");
+                } catch (IOException e) {
+                    log.warn("Sync failed for {} – deleting stale repo and re-cloning: {}",
+                            repoName, e.getMessage());
+                    closeAndEvict(repoName);
+                    deleteDirectory(repoPath);
+                    Files.createDirectories(repoPath.getParent());
+                    sparseClone(puppetRepoUrl, repoPath, "prod", PUPPET_SPARSE_PATHS);
+                }
             } else {
                 log.info("Sparse-cloning repository {} from {}", repoName, puppetRepoUrl);
                 Files.createDirectories(repoPath.getParent());
                 sparseClone(puppetRepoUrl, repoPath, "prod", PUPPET_SPARSE_PATHS);
-                Git git = Git.open(repoPath.toFile());
-                repoCache.put(repoName, git);
             }
+            Git git = Git.open(repoPath.toFile());
+            repoCache.put(repoName, git);
         } catch (IOException e) {
             log.error("Error preparing repository {}", repoName, e);
             throw new RuntimeException("Kunde inte förbereda repository: " + repoName, e);
@@ -415,6 +433,31 @@ public class GitService {
             log.info("Sparse clone complete. Checked-out paths: {}", sparsePaths);
         } catch (GitAPIException e) {
             throw new IOException("Sparse clone failed for " + repoUrl, e);
+        }
+    }
+
+    /** Closes and removes a cached {@link Git} instance so its directory can be deleted. */
+    private void closeAndEvict(String repoName) {
+        Git stale = repoCache.remove(repoName);
+        if (stale != null) {
+            stale.close();
+        }
+    }
+
+    /**
+     * Recursively deletes a directory tree. Used to remove stale partial-clone repos
+     * that JGit cannot sync (MissingObjectException).
+     */
+    private void deleteDirectory(Path path) throws IOException {
+        try (var stream = Files.walk(path)) {
+            stream.sorted(Comparator.reverseOrder())
+                  .forEach(p -> {
+                      try {
+                          Files.delete(p);
+                      } catch (IOException e) {
+                          log.warn("Could not delete {}: {}", p, e.getMessage());
+                      }
+                  });
         }
     }
 

@@ -3,24 +3,24 @@ package com.company.mqprovisioning.service.git;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.CreateBranchCommand;
 import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.ResetCommand;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.lib.StoredConfig;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -118,7 +118,9 @@ public class GitService {
 
             Path repoPath = git.getRepository().getWorkTree().toPath();
 
-            // Sync to latest master via JGit API – no system git binary required.
+            // Sync to latest master via git CLI so partial-clone / sparse-checkout is
+            // handled correctly. JGit does not support the promisor protocol and would
+            // fail with MissingObjectException when resetting to a partial-clone ref.
             syncRepo(repoPath, hieradataRepoUrl, "master");
 
             // Branch creation is a pure ref operation – no object fetching, safe for JGit.
@@ -146,7 +148,7 @@ public class GitService {
 
             Path repoPath = git.getRepository().getWorkTree().toPath();
 
-            // Sync to latest prod via JGit API – no system git binary required.
+            // Sync to latest prod via git CLI – JGit reset fails on partial clones.
             syncRepo(repoPath, puppetRepoUrl, "prod");
 
             git.checkout()
@@ -332,91 +334,106 @@ public class GitService {
     }
 
     /**
-     * Syncs an existing local repo to the latest state of {@code branch} on the remote
-     * using the JGit API. No system git binary is required, making this safe in
-     * container environments where git may not be installed.
+     * Syncs an existing local repo to the latest state of {@code branch} on the remote.
+     * Uses the git CLI instead of JGit because JGit does not understand the partial-clone
+     * promisor protocol – it would throw MissingObjectException when resetting to a ref
+     * whose blobs were filtered out by {@code --filter=blob:none}.
+     * Requires git to be installed in the container (see Dockerfile).
      */
     private void syncRepo(Path repoPath, String repoUrl, String branch) throws IOException {
-        try (Git git = Git.open(repoPath.toFile())) {
+        try {
+            String authenticatedUrl = buildAuthenticatedUrl(repoUrl);
+
             // Keep the stored remote URL up to date.
-            StoredConfig config = git.getRepository().getConfig();
-            config.setString("remote", "origin", "url", repoUrl);
-            config.save();
+            runGitCommand(repoPath, Arrays.asList("git", "remote", "set-url", "origin", authenticatedUrl));
 
             // Abort any in-progress merge/rebase/cherry-pick before touching anything.
-            git.reset().setMode(ResetCommand.ResetType.HARD).call();
+            runGitCommand(repoPath, Arrays.asList("git", "reset", "--hard", "HEAD"));
 
-            // Fetch the target branch from origin.
-            git.fetch()
-               .setRemote("origin")
-               .setCredentialsProvider(getCredentialsProvider())
-               .call();
+            // Fetch only the target branch; --filter is read from .git/config (partial clone).
+            runGitCommand(repoPath, Arrays.asList("git", "fetch", "--depth=1", "origin", branch));
 
-            // Switch to the branch if not already on it.
-            String currentBranch = git.getRepository().getBranch();
-            if (!branch.equals(currentBranch)) {
-                git.checkout().setName(branch).call();
-            }
-
-            // Hard-reset to the fetched remote tracking ref.
-            git.reset()
-               .setMode(ResetCommand.ResetType.HARD)
-               .setRef("refs/remotes/origin/" + branch)
-               .call();
+            runGitCommand(repoPath, Arrays.asList("git", "checkout", branch));
+            runGitCommand(repoPath, Arrays.asList("git", "reset", "--hard", "origin/" + branch));
 
             log.info("Synced {} to origin/{}", repoPath.getFileName(), branch);
-        } catch (GitAPIException e) {
-            throw new IOException("Sync failed for " + repoPath, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Sync interrupted for " + repoPath, e);
         }
     }
 
     /**
-     * Clones a repository with sparse checkout so that only {@code sparsePaths} directories
-     * are written to disk, using the JGit API. No system git binary is required, making
-     * this safe in container environments where git may not be installed.
+     * Clones a repository using sparse checkout so that only {@code sparsePaths} directories
+     * are written to disk, and using {@code --filter=blob:none} so that blobs outside the
+     * sparse cone are never downloaded from the server.
      *
-     * <p>Unlike the previous implementation this does not use {@code --filter=blob:none}
-     * (partial clone), because JGit does not support the promisor protocol. The full
-     * object graph is fetched, but only files under the sparse paths are written to the
-     * working tree.
+     * <p>Requires git 2.25+ in the container (see Dockerfile) and partial-clone support on
+     * the remote (Bitbucket Data Center 7.x+ supports this).
      */
     private void sparseClone(String repoUrl, Path repoPath, String branch, List<String> sparsePaths)
             throws IOException {
         try {
             log.info("Sparse-cloning {} (branch: {}) – paths: {}", repoUrl, branch, sparsePaths);
 
-            // Clone without checking out files so we can configure sparse checkout first.
-            try (Git git = Git.cloneRepository()
-                    .setURI(repoUrl)
-                    .setDirectory(repoPath.toFile())
-                    .setCredentialsProvider(getCredentialsProvider())
-                    .setBranch(branch)
-                    .setNoCheckout(true)
-                    .call()) {
+            // Embed credentials in the URL so the git CLI does not prompt interactively.
+            String authenticatedUrl = buildAuthenticatedUrl(repoUrl);
 
-                // Enable sparse checkout in git config.
-                StoredConfig config = git.getRepository().getConfig();
-                config.setBoolean("core", null, "sparseCheckout", true);
-                config.save();
+            // Download commit + tree objects only; no blobs yet.
+            runGitCommand(repoPath.getParent(), Arrays.asList(
+                    "git", "clone",
+                    "--filter=blob:none",
+                    "--no-checkout",
+                    "--depth=1",
+                    "--branch", branch,
+                    authenticatedUrl,
+                    repoPath.getFileName().toString()
+            ));
 
-                // Write the sparse-checkout patterns file (non-cone mode).
-                // Each path gets a trailing slash so git matches the full directory subtree.
-                Path sparseFile = repoPath.resolve(".git/info/sparse-checkout");
-                Files.createDirectories(sparseFile.getParent());
-                String patterns = sparsePaths.stream()
-                        .map(p -> p + "/")
-                        .collect(Collectors.joining("\n"));
-                Files.writeString(sparseFile, patterns);
+            // Enable cone-mode sparse checkout (faster pattern matching).
+            runGitCommand(repoPath, Arrays.asList("git", "sparse-checkout", "init", "--cone"));
 
-                // Checkout – JGit respects core.sparseCheckout and the patterns file,
-                // so only files under the configured paths are written to disk.
-                git.checkout().setName(branch).call();
-            }
+            // Restrict working tree to the specified directories.
+            List<String> setCmd = new ArrayList<>(Arrays.asList("git", "sparse-checkout", "set"));
+            setCmd.addAll(sparsePaths);
+            runGitCommand(repoPath, setCmd);
+
+            // Checkout – only blobs for the sparse paths are fetched from the server.
+            runGitCommand(repoPath, Arrays.asList("git", "checkout", branch));
 
             log.info("Sparse clone complete. Checked-out paths: {}", sparsePaths);
-        } catch (GitAPIException e) {
-            throw new IOException("Sparse clone failed for " + repoUrl, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Sparse clone interrupted for " + repoUrl, e);
         }
+    }
+
+    private void runGitCommand(Path directory, List<String> command) throws IOException, InterruptedException {
+        log.debug("git> {}", String.join(" ", command));
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(directory.toFile());
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        String output = new String(process.getInputStream().readAllBytes());
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new RuntimeException("Git command failed (exit " + exitCode + "): "
+                    + String.join(" ", command) + "\nOutput: " + output);
+        }
+        if (!output.isBlank()) {
+            log.debug("git output: {}", output);
+        }
+    }
+
+    /**
+     * Inserts username and token into an HTTPS URL so the git CLI can authenticate
+     * without an interactive terminal prompt, e.g.:
+     * {@code https://user:token@bitbucket.example.com/scm/pup/repo.git}
+     */
+    private String buildAuthenticatedUrl(String repoUrl) {
+        String encodedUser  = URLEncoder.encode(gitUsername, StandardCharsets.UTF_8);
+        String encodedToken = URLEncoder.encode(gitToken,    StandardCharsets.UTF_8);
+        return repoUrl.replace("https://", "https://" + encodedUser + ":" + encodedToken + "@");
     }
 
     private UsernamePasswordCredentialsProvider getCredentialsProvider() {

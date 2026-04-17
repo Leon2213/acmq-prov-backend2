@@ -292,7 +292,12 @@ public class ConfigParserService {
         // Steg 2: Hitta subscription-definitioner för varje topic
         // Format: <security-setting match="<%= @address_topic_name%>::<%= @multicast_subscription_name%>">
         Pattern subscriptionPattern = Pattern.compile(
-                "<security-setting\\s+match=\"<%=\\s*@address_([a-zA-Z0-9_]+)\\s*%>::<%=\\s*@multicast_([a-zA-Z0-9_]+)\\s*%>\">"
+                "<security-setting\\s+match=\"<%=\\s*@address_([a-zA-Z0-9_]+)\\s*%>::<%=\\s*@multicast_([a-zA-Z0-9_]+)\\s*%>\">(.*?)</security-setting>",
+                Pattern.DOTALL
+        );
+
+        Pattern consumePermissionPattern = Pattern.compile(
+                "<permission\\s+type=\"consume\"\\s+roles=\"([^\"]+)\""
         );
 
         // Steg 3: Hitta send permission roller
@@ -334,11 +339,16 @@ public class ConfigParserService {
         while (subscriptionMatcher.find()) {
             String topicVarName = subscriptionMatcher.group(1);
             String subscriptionVarName = subscriptionMatcher.group(2); // t.ex. "processed_subscription_incidentprocess"
+            String subscriptionContent = subscriptionMatcher.group(3);
             String subscriptionDisplayName = subscriptionVarName.replace("_", "-");
 
             if (topicDataMap.containsKey(topicVarName)) {
-                String subscriberNameRaw = extractSubscriptionName(subscriptionVarName);
-                String subscriberName = subscriberNameRaw.replace("_", "-");
+                // Subscriber hämtas från consume-rollen som inte är admin
+                String subscriberName = extractSubscriberFromConsumeRoles(subscriptionContent, consumePermissionPattern);
+                if (subscriberName == null) {
+                    // Fallback: ta allt efter _subscription_ i variabelnamnet
+                    subscriberName = extractSubscriptionName(subscriptionVarName).replace("_", "-");
+                }
                 // Spara varName som nyckel för att kunna slå upp enabled-status
                 topicDataMap.get(topicVarName).subscriptions.put(subscriptionVarName,
                         new String[]{subscriptionDisplayName, subscriberName});
@@ -405,6 +415,20 @@ public class ConfigParserService {
             this.varName = varName;
             this.producers = producers;
         }
+    }
+
+    private String extractSubscriberFromConsumeRoles(String securitySettingContent, Pattern consumePermissionPattern) {
+        if (securitySettingContent == null) return null;
+        Matcher matcher = consumePermissionPattern.matcher(securitySettingContent);
+        if (matcher.find()) {
+            for (String role : matcher.group(1).split(",")) {
+                String trimmedRole = role.trim();
+                if (!trimmedRole.endsWith("-admin")) {
+                    return trimmedRole;
+                }
+            }
+        }
+        return null;
     }
 
     /**

@@ -373,7 +373,7 @@ public class ConfigParserService {
                 String subDisplayName = sub.getValue()[0];
                 String subscriber = sub.getValue()[1];
                 boolean testEnabled = testEnabledMap.getOrDefault(subVarName, true);
-                boolean prodEnabled = prodEnabledMap.getOrDefault(subVarName, true);
+                boolean prodEnabled = prodEnabledMap.getOrDefault(subVarName, false);
                 subscriptionList.add(TopicDto.SubscriptionStatus.builder()
                         .name(subDisplayName)
                         .subscriber(subscriber)

@@ -246,22 +246,27 @@ public class AcmqYamlService {
         // Admin-grupp (alltid inkludera 'admin' användaren)
         updateOrCreateRole(roles, adminGroup, Collections.singleton("admin"));
 
-        // Read-grupp (konsumenter + subscribers från subscriptions)
+        // Read-grupp (konsumenter + producenter + subscribers från subscriptions)
         Set<String> readUsers = new LinkedHashSet<>();
         if (request.getConsumers() != null && !request.getConsumers().isEmpty()) {
             readUsers.addAll(request.getConsumers());
         }
-        // Lägg till subscribers (de ska kunna läsa/konsumera från sina subscriptions)
+        if (request.getProducers() != null && !request.getProducers().isEmpty()) {
+            readUsers.addAll(request.getProducers());
+        }
         readUsers.addAll(subscribers);
 
         if (!readUsers.isEmpty()) {
             updateOrCreateRole(roles, readGroup, readUsers);
         }
 
-        // Write-grupp (producenter + subscribers)
+        // Write-grupp (producenter + konsumenter + subscribers)
         Set<String> writeUsers = new LinkedHashSet<>();
         if (request.getProducers() != null && !request.getProducers().isEmpty()) {
             writeUsers.addAll(request.getProducers());
+        }
+        if (request.getConsumers() != null && !request.getConsumers().isEmpty()) {
+            writeUsers.addAll(request.getConsumers());
         }
         writeUsers.addAll(subscribers);
 

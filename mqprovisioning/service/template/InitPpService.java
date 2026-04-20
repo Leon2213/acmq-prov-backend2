@@ -385,7 +385,7 @@ public class InitPpService {
 
         // Skapa subscription-variabeldeklarationer
         String newLine = formatParameterLine("multicast", subscriptionVarName, subscriptionValue, alignmentColumn);
-        String newEnabledLine = formatParameterLine("multicast", subscriptionVarName + "_enabled", "true", alignmentColumn);
+        String newEnabledLine = formatParameterLine("multicast", subscriptionVarName + "_enabled", "false", alignmentColumn);
 
         // Infoga nya deklarationerna efter sista befintliga deklaration
         StringBuilder newClassParams = new StringBuilder();

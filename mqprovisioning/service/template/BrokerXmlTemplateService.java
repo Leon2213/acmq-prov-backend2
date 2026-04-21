@@ -90,7 +90,7 @@ public class BrokerXmlTemplateService {
         // Sök efter security-setting med ERB-variabel för denna resurs
         // Pattern: <security-setting match="<%= @address_variableName%>.#">
         String pattern = String.format(
-                "<security-setting\\s+match=\"<%%= @address_%s%%>\\.#\">",
+                "<security-setting\\s+match=\"<%%= @address_%s\\s*%%>\\.#\">",
                 Pattern.quote(variableName)
         );
         boolean exists = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(existingContent).find();
@@ -114,7 +114,7 @@ public class BrokerXmlTemplateService {
         // Hitta hela security-setting blocket för denna resurs
         // Pattern matchar: <security-setting match="<%= @address_xxx%>.#">...</security-setting>
         String securitySettingPattern = String.format(
-                "(<security-setting\\s+match=\"<%%= @address_%s%%>\\.#\">)(.*?)(</security-setting>)",
+                "(<security-setting\\s+match=\"<%%= @address_%s\\s*%%>\\.#\">)(.*?)(</security-setting>)",
                 Pattern.quote(variableName)
         );
 
@@ -246,7 +246,7 @@ public class BrokerXmlTemplateService {
 
         // Pattern: <security-setting match="<%= @address_xxx%>::<%= @multicast_yyy%>">
         String pattern = String.format(
-                "<security-setting\\s+match=\"<%%= @address_%s%%>::<%%= @multicast_%s%%>\">",
+                "<security-setting\\s+match=\"<%%= @address_%s\\s*%%>::<%%= @multicast_%s\\s*%%>\">",
                 Pattern.quote(variableName),
                 Pattern.quote(subscriptionVarName)
         );
@@ -533,7 +533,7 @@ public class BrokerXmlTemplateService {
         // Sök efter address med ERB-variabel för denna resurs
         // Pattern: <address name="<%= @address_variableName%>">
         String pattern = String.format(
-                "<address\\s+name=\"<%%= @address_%s%%>\">",
+                "<address\\s+name=\"<%%= @address_%s\\s*%%>\">",
                 Pattern.quote(variableName)
         );
         boolean exists = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(existingContent).find();
@@ -577,9 +577,9 @@ public class BrokerXmlTemplateService {
 
         String subscriptionVarName = convertToVariableName(subscriptionName);
 
-        // Pattern: <queue name="<%= @multicast_subscriptionVarName%>"/>
+        // Pattern: <queue name="<%= @multicast_subscriptionVarName %>"/> (tolerate optional space before %>)
         String pattern = String.format(
-                "<queue\\s+name=\"<%%= @multicast_%s%%>\"",
+                "<queue\\s+name=\"<%%= @multicast_%s\\s*%%>\"",
                 Pattern.quote(subscriptionVarName)
         );
         boolean exists = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(existingContent).find();
@@ -623,7 +623,7 @@ public class BrokerXmlTemplateService {
         // Hitta address-blocket för detta topic
         // Pattern: <address name="<%= @address_xxx%>">...<multicast>...</multicast>...</address>
         String addressPattern = String.format(
-                "(<address\\s+name=\"<%%= @address_%s%%>\">.*?<multicast>)(.*?)(</multicast>)",
+                "(<address\\s+name=\"<%%= @address_%s\\s*%%>\">.*?<multicast>)(.*?)(</multicast>)",
                 Pattern.quote(variableName)
         );
 

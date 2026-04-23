@@ -135,10 +135,13 @@ public class BrokerXmlTemplateService {
         innerContent = replacePermissionRoles(innerContent, "send",
                 request.getProducers() != null ? request.getProducers() : java.util.Collections.emptyList());
 
-        // Uppdatera consume och browse permissions med consumers (ersätter befintliga)
+        // Uppdatera consume, browse och queue/address-permissions med consumers (ersätter befintliga)
         java.util.List<String> consumers = request.getConsumers() != null ? request.getConsumers() : java.util.Collections.emptyList();
         innerContent = replacePermissionRoles(innerContent, "consume", consumers);
         innerContent = replacePermissionRoles(innerContent, "browse", consumers);
+        innerContent = replacePermissionRoles(innerContent, "createNonDurableQueue", consumers);
+        innerContent = replacePermissionRoles(innerContent, "createDurableQueue", consumers);
+        innerContent = replacePermissionRoles(innerContent, "createAddress", consumers);
 
         // Ersätt det gamla security-setting blocket med det uppdaterade
         String updatedSecuritySetting = openTag + innerContent + closeTag;

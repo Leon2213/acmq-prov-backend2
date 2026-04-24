@@ -135,13 +135,15 @@ public class BrokerXmlTemplateService {
         innerContent = replacePermissionRoles(innerContent, "send",
                 request.getProducers() != null ? request.getProducers() : java.util.Collections.emptyList());
 
-        // Uppdatera consume, browse och queue/address-permissions med consumers (ersätter befintliga)
+        // Uppdatera consume och browse permissions med consumers (ersätter befintliga icke-admin roller)
         java.util.List<String> consumers = request.getConsumers() != null ? request.getConsumers() : java.util.Collections.emptyList();
         innerContent = replacePermissionRoles(innerContent, "consume", consumers);
         innerContent = replacePermissionRoles(innerContent, "browse", consumers);
-        innerContent = replacePermissionRoles(innerContent, "createNonDurableQueue", consumers);
-        innerContent = replacePermissionRoles(innerContent, "createDurableQueue", consumers);
-        innerContent = replacePermissionRoles(innerContent, "createAddress", consumers);
+
+        // Lägg till consumers i queue/address-permissions utan att ta bort befintliga roller (t.ex. producers)
+        innerContent = addRolesToPermission(innerContent, "createNonDurableQueue", consumers);
+        innerContent = addRolesToPermission(innerContent, "createDurableQueue", consumers);
+        innerContent = addRolesToPermission(innerContent, "createAddress", consumers);
 
         // Ersätt det gamla security-setting blocket med det uppdaterade
         String updatedSecuritySetting = openTag + innerContent + closeTag;
@@ -201,6 +203,50 @@ public class BrokerXmlTemplateService {
         String updatedPermission = prefix + updatedRoles + suffix;
 
         log.debug("Updated permission '{}': {} -> {}", permissionType, existingRoles, updatedRoles);
+
+        return matcher.replaceFirst(java.util.regex.Matcher.quoteReplacement(updatedPermission));
+    }
+
+    /**
+     * Lägger till roller för en specifik permission-typ utan att ta bort befintliga roller.
+     * Används för permissions som delas av både producers och consumers (t.ex. createNonDurableQueue).
+     */
+    private String addRolesToPermission(String innerContent, String permissionType, java.util.List<String> rolesToAdd) {
+        String permissionPattern = String.format(
+                "(<permission\\s+type=\"%s\"\\s+roles=\")([^\"]*)(\"\\s*/>)",
+                Pattern.quote(permissionType)
+        );
+
+        java.util.regex.Pattern pattern = Pattern.compile(permissionPattern);
+        java.util.regex.Matcher matcher = pattern.matcher(innerContent);
+
+        if (!matcher.find()) {
+            log.debug("Permission type '{}' not found, skipping", permissionType);
+            return innerContent;
+        }
+
+        String prefix = matcher.group(1);
+        String existingRoles = matcher.group(2);
+        String suffix = matcher.group(3);
+
+        // Behåll alla befintliga roller och lägg till de nya utan duplicering
+        java.util.LinkedHashSet<String> roleSet = new java.util.LinkedHashSet<>();
+        if (existingRoles != null && !existingRoles.isEmpty()) {
+            for (String role : existingRoles.split(",")) {
+                String trimmed = role.trim();
+                if (!trimmed.isEmpty()) {
+                    roleSet.add(trimmed);
+                }
+            }
+        }
+        for (String newRole : rolesToAdd) {
+            roleSet.add(newRole);
+        }
+
+        String updatedRoles = String.join(",", roleSet);
+        String updatedPermission = prefix + updatedRoles + suffix;
+
+        log.debug("Added roles to permission '{}': {} -> {}", permissionType, existingRoles, updatedRoles);
 
         return matcher.replaceFirst(java.util.regex.Matcher.quoteReplacement(updatedPermission));
     }

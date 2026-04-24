@@ -688,12 +688,21 @@ public class BrokerXmlTemplateService {
         String multicastContent = matcher.group(2);
         String closeMulticast = matcher.group(3);
 
-        // Detektera indentering från multicast-innehållet
+        // Detektera indentering från multicast-innehållet (endast horisontellt whitespace, inte \n)
         String queueIndent = "              "; // Default: 14 spaces
-        java.util.regex.Pattern indentPattern = Pattern.compile("^(\\s*)<queue", Pattern.MULTILINE);
+        java.util.regex.Pattern indentPattern = Pattern.compile("^([ \\t]*)<queue", Pattern.MULTILINE);
         java.util.regex.Matcher indentMatcher = indentPattern.matcher(multicastContent);
         if (indentMatcher.find()) {
             queueIndent = indentMatcher.group(1);
+        }
+
+        // Detektera avslutande indentering (whitespace på sista raden innan </multicast>)
+        String closingIndent = "            "; // Default: 12 spaces
+        String stripped = multicastContent.stripTrailing();
+        String removedTrailing = multicastContent.substring(stripped.length());
+        int lastNl = removedTrailing.lastIndexOf('\n');
+        if (lastNl >= 0) {
+            closingIndent = removedTrailing.substring(lastNl + 1);
         }
 
         // Skapa ny queue-tagg
@@ -702,8 +711,7 @@ public class BrokerXmlTemplateService {
                 queueIndent, subscriptionVarName, subscriptionVarName);
 
         // Lägg till queue före </multicast>
-        String trimmedMulticastContent = multicastContent.stripTrailing();
-        String updatedMulticastContent = trimmedMulticastContent + "\n" + newQueueTag + "\n            ";
+        String updatedMulticastContent = stripped + "\n" + newQueueTag + "\n" + closingIndent;
 
         // Ersätt i innehållet
         String updatedContent = matcher.replaceFirst(
